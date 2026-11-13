@@ -184,9 +184,7 @@ async function playCurrent(){
     }
     if(!dev){ noDevice = true; throw new Error('No encuentro Spotify. Ábrelo, pon cualquier canción y déjala sonando, vuelve aquí y toca el disco.') }
     noDevice = false;
-    const t = game.track;
-    let pos = settings.offset === '30' ? 30000 : settings.offset === 'rand' ? 20000 + Math.floor(Math.random() * 40000) : 0;
-    if(t.dur) pos = Math.max(0, Math.min(pos, t.dur - 30000));
+    const t = game.track, pos = offsetFor(t);
     await api('/me/player/play?device_id=' + dev.id, { method:'PUT', body:JSON.stringify({ uris:[t.uri], position_ms:pos }) });
     playing = true;
   }catch(e){
@@ -194,6 +192,40 @@ async function playCurrent(){
   }
   render();
 }
+function offsetFor(t){
+  let pos = settings.offset === '30' ? 30000 : settings.offset === 'rand' ? 20000 + Math.floor(Math.random() * 40000) : 0;
+  if(t.dur) pos = Math.max(0, Math.min(pos, t.dur - 30000));
+  return pos;
+}
+
+/* Modo QR: cuando el otro móvil empieza a reproducir la canción, saltar al punto elegido */
+let pollTimer = null, pollFor = null, seekState = '';
+const seekTexts = {
+  waiting:'Cuando empiece a sonar, la web la adelantará sola.',
+  done:'Listo, la canción ya va por el punto elegido.',
+  nopremium:'No se ha podido adelantar: hace falta que ese móvil use la misma cuenta Premium que esta web.',
+  timeout:'No he detectado la canción sonando en tu cuenta, así que no se ha adelantado.'
+};
+function setSeek(st){ seekState = st; const h = $('#seekhint'); if(h) h.textContent = seekTexts[st] }
+function stopPoll(){ clearInterval(pollTimer); pollTimer = null }
+function startPoll(){
+  stopPoll(); pollFor = game.track.id;
+  if(settings.offset === '0' || !auth) return;
+  const id = game.track.id, pos = offsetFor(game.track), started = Date.now();
+  setSeek('waiting');
+  pollTimer = setInterval(async () => {
+    if(Date.now() - started > 120000){ stopPoll(); setSeek('timeout'); return }
+    try{
+      const p = await api('/me/player'), it = p?.item;
+      if(it && (it.id === id || it.linked_from?.id === id) && p.is_playing){
+        stopPoll();
+        if(p.progress_ms < pos - 3000) await api('/me/player/seek?position_ms=' + pos, { method:'PUT' });
+        setSeek('done');
+      }
+    }catch(e){ if(e.reason === 'PREMIUM_REQUIRED'){ stopPoll(); setSeek('nopremium') } }
+  }, 2000);
+}
+
 function pause(){ if(playing){ playing = false; api('/me/player/pause', { method:'PUT' }).catch(() => {}) } }
 
 /* ---------- Partida ---------- */
@@ -231,9 +263,8 @@ function renderSetup(){
     ${library.length ? `<p class="muted" style="margin-top:10px">${library.length} canciones cargadas.</p>` : ''}</section>
   <section class="sec"><h2>3. Partida</h2>
     <label>Cómo suena la música<select data-set="sound">${opts(['qr','connect'], settings.sound, v => ({ qr:'Escaneando un QR con otro móvil', connect:'En el Spotify que esté abierto' })[v])}</select></label>
-    ${settings.sound === 'qr'
-      ? '<p class="muted">Esta pantalla muestra un QR por canción. Quien lo escanee abre la canción en su Spotify; ese móvil hace de altavoz y su pantalla no la debe ver nadie más.</p>'
-      : `<label>La canción empieza<select data-set="offset">${opts(['0','30','rand'], settings.offset, v => ({ '0':'Desde el principio', '30':'A los 30 segundos', rand:'En un punto al azar' })[v])}</select></label>`}
+    <label>La canción empieza<select data-set="offset">${opts(['0','30','rand'], settings.offset, v => ({ '0':'Desde el principio', '30':'A los 30 segundos', rand:'En un punto al azar' })[v])}</select></label>
+    ${settings.sound === 'qr' ? `<p class="muted">Esta pantalla muestra un QR por canción. Quien lo escanee abre la canción en su Spotify; ese móvil hace de altavoz y su pantalla no la debe ver nadie más.${settings.offset !== '0' ? ' Para que la canción se adelante sola, ese móvil tiene que tener abierta la misma cuenta Premium que esta web.' : ''}</p>` : ''}
     ${missing.length ? `<p class="muted">Para empezar falta: ${missing.join(' y ')}.</p>` : ''}</section>
   <div class="dock"><button class="btn" data-act="start" ${missing.length ? 'disabled' : ''}>${ongoing ? 'Empezar una partida nueva' : 'Empezar partida'}</button></div>
   </main>`;
@@ -255,7 +286,8 @@ function renderGame(){
   const head = `<div class="top"><button class="ghost sm" data-act="toSetup">Menú</button><span class="muted">Canción ${g.played.length + 1} de ${total}</span></div>${alertBox()}`;
   if(g.phase === 'hidden' && settings.sound === 'qr') return `<main>${head}
     <div class="qrcard" id="qr" role="img" aria-label="Código QR de la canción"></div>
-    <p class="muted" style="text-align:center">Escanéalo con el otro móvil para que suene.</p>${history}
+    <p class="muted" style="text-align:center">Escanéalo con el otro móvil para que suene.</p>
+    ${settings.offset !== '0' ? `<p class="muted" id="seekhint" style="text-align:center">${seekTexts[seekState] || ''}</p>` : ''}${history}
     <div class="dock"><button class="btn" data-act="reveal">Revelar tarjeta</button></div></main>`;
   if(g.phase === 'hidden') return `<main>${head}
     <button class="vinyl${playing ? ' spin' : ''}" data-act="play" aria-label="${playing ? 'Volver a poner la canción' : 'Poner la canción'}"><span class="lbl">${playing ? '♪' : '▶'}</span></button>
@@ -270,6 +302,8 @@ function renderGame(){
 function render(){
   app.innerHTML = screen === 'years' ? renderYears() : screen === 'game' && game ? renderGame() : renderSetup();
   const box = $('#qr');
+  if(box && game?.track){ if(pollFor !== game.track.id) startPoll() }
+  else { stopPoll(); pollFor = null }
   if(box && game?.track){
     if(window.QRCode) new QRCode(box, { text:'https://open.spotify.com/track/' + game.track.id, width:512, height:512, colorDark:'#000000', colorLight:'#ffffff', correctLevel:QRCode.CorrectLevel.M });
     else box.outerHTML = '<p class="msg">No se ha podido cargar el generador de QR. Comprueba la conexión y recarga la página.</p>';
