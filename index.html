@@ -47,6 +47,9 @@ button:disabled{opacity:.4;cursor:not-allowed}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 code{word-break:break-all;background:var(--bg);padding:3px 7px;border-radius:6px;font-size:.85rem}
 .msg{display:flex;gap:10px;align-items:flex-start;background:var(--bad);color:#fff;border-radius:14px;padding:12px 14px;margin:12px 0}
+.open-sp{display:inline-block;margin-top:8px;padding:8px 16px;border-radius:999px;background:#fff;color:#1F1A3D;font-weight:700;text-decoration:none}
+.qrcard{background:#fff;border-radius:22px;padding:18px;width:min(78vw,300px);margin:24px auto 12px;box-shadow:0 10px 30px rgba(20,15,50,.25)}
+.qrcard img,.qrcard canvas{width:100%!important;height:auto!important;display:block}
 .msg button{background:none;color:#fff;padding:0 4px;font-size:1.3rem;line-height:1}
 .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 summary{cursor:pointer;font-weight:700}
@@ -83,6 +86,7 @@ summary{cursor:pointer;font-weight:700}
 </head>
 <body>
 <div id="app"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const app = $('#app');
@@ -97,10 +101,10 @@ let clientId = LS.get('hx-client', '');
 let auth = LS.get('hx-auth', null);
 let library = LS.get('hx-library', []);
 let yearFix = LS.get('hx-years', {});
-let settings = Object.assign({ offset:'30' }, LS.get('hx-settings', {}));
+let settings = Object.assign({ offset:'30', sound:'qr' }, LS.get('hx-settings', {}));
 let game = LS.get('hx-game', null);
 if(game && game.mode !== 'bingo'){ game = null; LS.del('hx-game') }
-let screen = 'setup', msg = '', busy = false, playing = false;
+let screen = 'setup', msg = '', busy = false, playing = false, noDevice = false;
 
 const save = () => LS.set('hx-game', game);
 const yearOf = t => yearFix[t.id] ?? t.year;
@@ -171,10 +175,15 @@ async function loadPlaylist(input){
 /* ---------- Reproducción ---------- */
 async function playCurrent(){
   try{
-    const { devices } = await api('/me/player/devices');
-    const list = devices.filter(d => !d.is_restricted);
-    const dev = list.find(d => d.is_active) || list.find(d => d.type === 'Smartphone') || list[0];
-    if(!dev) throw new Error('No encuentro Spotify abierto. Abre la app de Spotify en este móvil, pon cualquier canción unos segundos y vuelve aquí.');
+    let dev = null;
+    for(let i = 0; i < 3 && !dev; i++){
+      if(i) await new Promise(r => setTimeout(r, 1500));
+      const { devices } = await api('/me/player/devices');
+      const list = devices.filter(d => !d.is_restricted);
+      dev = list.find(d => d.is_active) || list.find(d => d.type === 'Smartphone') || list[0];
+    }
+    if(!dev){ noDevice = true; throw new Error('No encuentro Spotify. Ábrelo, pon cualquier canción y déjala sonando, vuelve aquí y toca el disco.') }
+    noDevice = false;
     const t = game.track;
     let pos = settings.offset === '30' ? 30000 : settings.offset === 'rand' ? 20000 + Math.floor(Math.random() * 40000) : 0;
     if(t.dur) pos = Math.max(0, Math.min(pos, t.dur - 30000));
@@ -196,7 +205,7 @@ function startGame(){
 }
 
 /* ---------- Pantallas ---------- */
-const alertBox = () => msg ? `<div class="msg" role="alert"><span>${esc(msg)}</span><button data-act="clearMsg" aria-label="Cerrar aviso">×</button></div>` : '';
+const alertBox = () => msg ? `<div class="msg" role="alert"><span>${esc(msg)}${noDevice ? '<br><a class="open-sp" href="spotify:">Abrir Spotify</a>' : ''}</span><button data-act="clearMsg" aria-label="Cerrar aviso">×</button></div>` : '';
 
 function renderSetup(){
   const missing = [];
@@ -221,7 +230,10 @@ function renderSetup(){
     ${library.length ? '<button class="ghost" data-act="years">Revisar años</button>' : ''}</div>
     ${library.length ? `<p class="muted" style="margin-top:10px">${library.length} canciones cargadas.</p>` : ''}</section>
   <section class="sec"><h2>3. Partida</h2>
-    <label>La canción empieza<select data-set="offset">${opts(['0','30','rand'], settings.offset, v => ({ '0':'Desde el principio', '30':'A los 30 segundos', rand:'En un punto al azar' })[v])}</select></label>
+    <label>Cómo suena la música<select data-set="sound">${opts(['qr','connect'], settings.sound, v => ({ qr:'Escaneando un QR con otro móvil', connect:'En el Spotify que esté abierto' })[v])}</select></label>
+    ${settings.sound === 'qr'
+      ? '<p class="muted">Esta pantalla muestra un QR por canción. Quien lo escanee abre la canción en su Spotify; ese móvil hace de altavoz y su pantalla no la debe ver nadie más.</p>'
+      : `<label>La canción empieza<select data-set="offset">${opts(['0','30','rand'], settings.offset, v => ({ '0':'Desde el principio', '30':'A los 30 segundos', rand:'En un punto al azar' })[v])}</select></label>`}
     ${missing.length ? `<p class="muted">Para empezar falta: ${missing.join(' y ')}.</p>` : ''}</section>
   <div class="dock"><button class="btn" data-act="start" ${missing.length ? 'disabled' : ''}>${ongoing ? 'Empezar una partida nueva' : 'Empezar partida'}</button></div>
   </main>`;
@@ -241,6 +253,10 @@ function renderGame(){
   if(g.phase === 'end') return `<main><div class="hand"><p class="muted">Se acabó la playlist</p><p class="name">Fin</p></div>${history}
     <div class="dock"><button class="btn" data-act="newGame">Nueva partida</button></div></main>`;
   const head = `<div class="top"><button class="ghost sm" data-act="toSetup">Menú</button><span class="muted">Canción ${g.played.length + 1} de ${total}</span></div>${alertBox()}`;
+  if(g.phase === 'hidden' && settings.sound === 'qr') return `<main>${head}
+    <div class="qrcard" id="qr" role="img" aria-label="Código QR de la canción"></div>
+    <p class="muted" style="text-align:center">Escanéalo con el otro móvil para que suene.</p>${history}
+    <div class="dock"><button class="btn" data-act="reveal">Revelar tarjeta</button></div></main>`;
   if(g.phase === 'hidden') return `<main>${head}
     <button class="vinyl${playing ? ' spin' : ''}" data-act="play" aria-label="${playing ? 'Volver a poner la canción' : 'Poner la canción'}"><span class="lbl">${playing ? '♪' : '▶'}</span></button>
     <p class="muted" style="text-align:center">${playing ? 'Toca el disco si hace falta volver a ponerla.' : 'Toca el disco para poner la canción.'}</p>${history}
@@ -253,6 +269,11 @@ function renderGame(){
 
 function render(){
   app.innerHTML = screen === 'years' ? renderYears() : screen === 'game' && game ? renderGame() : renderSetup();
+  const box = $('#qr');
+  if(box && game?.track){
+    if(window.QRCode) new QRCode(box, { text:'https://open.spotify.com/track/' + game.track.id, width:512, height:512, colorDark:'#000000', colorLight:'#ffffff', correctLevel:QRCode.CorrectLevel.M });
+    else box.outerHTML = '<p class="msg">No se ha podido cargar el generador de QR. Comprueba la conexión y recarga la página.</p>';
+  }
 }
 
 /* ---------- Acciones ---------- */
@@ -272,7 +293,7 @@ const actions = {
     busy = false;
   },
   years(){ screen = 'years' },
-  start(){ startGame(); render(); playCurrent(); return false },
+  start(){ startGame(); render(); if(settings.sound !== 'qr') playCurrent(); return false },
   resume(){ screen = 'game' },
   toSetup(){ pause(); screen = 'setup' },
   newGame(){ game = null; LS.del('hx-game'); screen = 'setup' },
@@ -281,7 +302,7 @@ const actions = {
   next(){
     game.played.unshift(game.track);
     if(!game.deck.length){ pause(); game.track = null; game.phase = 'end'; save(); return }
-    game.track = game.deck.pop(); game.phase = 'hidden'; save(); render(); playCurrent(); return false;
+    game.track = game.deck.pop(); game.phase = 'hidden'; save(); render(); if(settings.sound !== 'qr') playCurrent(); return false;
   }
 };
 
