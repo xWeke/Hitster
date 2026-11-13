@@ -50,6 +50,9 @@ code{word-break:break-all;background:var(--bg);padding:3px 7px;border-radius:6px
 .open-sp{display:inline-block;margin-top:8px;padding:8px 16px;border-radius:999px;background:#fff;color:#1F1A3D;font-weight:700;text-decoration:none}
 .qrcard{background:#fff;border-radius:22px;padding:18px;width:min(78vw,300px);margin:24px auto 12px;box-shadow:0 10px 30px rgba(20,15,50,.25)}
 .qrcard img,.qrcard canvas{width:100%!important;height:auto!important;display:block}
+.saved{list-style:none;margin:0;padding:0}
+.saved li{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+.saved .row{flex-wrap:nowrap}
 .msg button{background:none;color:#fff;padding:0 4px;font-size:1.3rem;line-height:1}
 .top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
 summary{cursor:pointer;font-weight:700}
@@ -104,6 +107,8 @@ let clientId = fixedId ? CLIENT_ID : LS.get('hx-client', '');
 let auth = LS.get('hx-auth', null);
 let library = LS.get('hx-library', []);
 let yearFix = LS.get('hx-years', {});
+let saved = LS.get('hx-saved', []);
+let current = LS.get('hx-cur', null);
 let settings = Object.assign({ offset:'30', sound:'qr' }, LS.get('hx-settings', {}));
 let game = LS.get('hx-game', null);
 if(game && game.mode !== 'bingo'){ game = null; LS.del('hx-game') }
@@ -171,8 +176,13 @@ async function loadPlaylist(input){
     .map(t => ({ id:t.id, uri:t.uri, name:t.name, artists:(t.artists||[]).map(a => a.name).join(', '),
       year:parseInt((t.album?.release_date || '0').slice(0,4), 10), dur:t.duration_ms,
       img:(t.album?.images || []).slice(-2)[0]?.url || '' }));
-  LS.set('hx-library', library);
   if(!library.length) throw new Error('La playlist no tiene canciones que se puedan usar.');
+  let name = 'Playlist sin nombre';
+  try{ name = (await api('/playlists/' + m[1] + '?fields=name')).name || name }catch{}
+  current = { id:m[1], name, link:input };
+  LS.set('hx-library', library); LS.set('hx-cur', current);
+  const i = saved.findIndex(p => p.id === current.id);
+  if(i >= 0){ saved[i] = { ...current, tracks:library }; LS.set('hx-saved', saved) }
 }
 
 /* ---------- Reproducción ---------- */
@@ -264,7 +274,9 @@ function renderSetup(){
     <label>Enlace de la playlist<input id="pl" placeholder="https://open.spotify.com/playlist/..." value="${esc(LS.get('hx-pl',''))}"></label>
     <div class="row"><button class="btn" data-act="loadPl" ${!auth || busy ? 'disabled' : ''}>${busy ? 'Cargando…' : library.length ? 'Volver a cargar' : 'Cargar playlist'}</button>
     ${library.length ? '<button class="ghost" data-act="years">Revisar años</button>' : ''}</div>
-    ${library.length ? `<p class="muted" style="margin-top:10px">${library.length} canciones cargadas.</p>` : ''}</section>
+    ${library.length ? `<p class="muted" style="margin-top:10px">En uso: <strong>${esc(current?.name || 'playlist cargada')}</strong>, ${library.length} canciones.</p>` : ''}
+    ${current && library.length && !saved.some(p => p.id === current.id) ? '<button class="ghost sm" data-act="savePl">Guardar esta playlist</button>' : ''}
+    ${saved.length ? `<h2 style="margin-top:18px">Playlists guardadas</h2><ul class="saved">${saved.map((p, i) => `<li><span>${esc(p.name)} <span class="muted">(${p.tracks.length})</span></span><span class="row">${current?.id === p.id ? '<span class="muted">En uso</span>' : `<button class="ghost sm" data-act="usePl" data-i="${i}">Usar</button>`}<button class="ghost sm" data-act="delPl" data-i="${i}" aria-label="Borrar ${esc(p.name)}">Borrar</button></span></li>`).join('')}</ul>` : ''}</section>
   <section class="sec"><h2>3. Partida</h2>
     <label>Cómo suena la música<select data-set="sound">${opts(['qr','connect'], settings.sound, v => ({ qr:'Escaneando un QR con otro móvil', connect:'En el Spotify que esté abierto' })[v])}</select></label>
     <label>La canción empieza<select data-set="offset">${opts(['0','30','rand'], settings.offset, v => ({ '0':'Desde el principio', '30':'A los 30 segundos', rand:'En un punto al azar' })[v])}</select></label>
@@ -334,6 +346,16 @@ const actions = {
     busy = false;
   },
   years(){ screen = 'years' },
+  savePl(){ if(current && library.length){ saved.push({ ...current, tracks:library }); LS.set('hx-saved', saved) } },
+  usePl(d){
+    const p = saved[+d.i]; if(!p) return;
+    library = p.tracks; current = { id:p.id, name:p.name, link:p.link };
+    LS.set('hx-library', library); LS.set('hx-cur', current); LS.set('hx-pl', p.link || '');
+  },
+  delPl(d){
+    const p = saved[+d.i]; if(!p || !confirm('¿Borrar la playlist guardada «' + p.name + '»?')) return;
+    saved.splice(+d.i, 1); LS.set('hx-saved', saved);
+  },
   start(){ startGame(); render(); if(settings.sound !== 'qr') playCurrent(); return false },
   resume(){ screen = 'game' },
   toSetup(){ pause(); screen = 'setup' },
