@@ -97,7 +97,10 @@ const LS = {
 };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
-let clientId = LS.get('hx-client', '');
+// ⬇️ Pega aquí el Client ID de tu app de Spotify Developer (entre las comillas)
+const CLIENT_ID = 'd25a4d3f15394362bfac8eb9562c5dbd';
+const fixedId = !CLIENT_ID.startsWith('PEGA');
+let clientId = fixedId ? CLIENT_ID : LS.get('hx-client', '');
 let auth = LS.get('hx-auth', null);
 let library = LS.get('hx-library', []);
 let yearFix = LS.get('hx-years', {});
@@ -252,6 +255,7 @@ function renderSetup(){
   ${ongoing ? '<button class="btn wide" data-act="resume">Continuar la partida</button>' : ''}
   <section class="sec"><h2>1. Spotify</h2>${auth
     ? '<div class="row"><p style="margin:0;flex:1">Cuenta conectada.</p><button class="ghost sm" data-act="logout">Desconectar</button></div>'
+    : fixedId ? '<button class="btn" data-act="login">Conectar con Spotify</button>'
     : `<p class="muted">Crea una app en developer.spotify.com/dashboard con la opción Web API y añade esta dirección de redirección exacta:</p>
        <p><code>${esc(redirectUri)}</code> <button class="ghost sm" data-act="copyUri">Copiar</button></p>
        <label>Client ID de la app<input id="cid" value="${esc(clientId)}" autocomplete="off" spellcheck="false"></label>
@@ -315,9 +319,12 @@ const actions = {
   clearMsg(){},
   copyUri(_, b){ navigator.clipboard?.writeText(redirectUri).then(() => { b.textContent = 'Copiada' }); return false },
   async login(){
-    clientId = ($('#cid')?.value || '').trim();
-    if(!clientId){ msg = 'Pega el Client ID de tu app de Spotify.'; return }
-    LS.set('hx-client', clientId); await login(); return false;
+    if(!fixedId){
+      clientId = ($('#cid')?.value || '').trim();
+      if(!clientId){ msg = 'Pega el Client ID de tu app de Spotify.'; return }
+      LS.set('hx-client', clientId);
+    }
+    await login(); return false;
   },
   logout(){ auth = null; LS.del('hx-auth') },
   async loadPl(){
